@@ -6,10 +6,10 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
     QFileDialog, QLabel, QComboBox, QListWidget, QListWidgetItem,
     QTextEdit, QMessageBox, QTableView, QAbstractItemView, QDialog,
-    QLineEdit, QFormLayout, QGroupBox
+    QLineEdit, QFormLayout, QGroupBox, QMenu
 )
-from PyQt5.QtCore import Qt, QAbstractTableModel, QVariant, QSize
-from PyQt5.QtGui import QTextDocument
+from PyQt5.QtCore import Qt, QAbstractTableModel, QVariant, QSize, QPoint
+from PyQt5.QtGui import QTextDocument, QColor, QClipboard
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QStyle
 
 
@@ -23,8 +23,9 @@ class MultiLineDelegate(QStyledItemDelegate):
             text = ""
         painter.save()
 
-        # Draw the background
+        # Initialize the style option and prevent default text drawing
         self.initStyleOption(option, index)
+        option.text = ""  # Prevent default text drawing
         style = option.widget.style()
         style.drawControl(QStyle.CE_ItemViewItem, option, painter)
 
@@ -84,6 +85,11 @@ class DataFrameModel(QAbstractTableModel):
             if isinstance(value, str):
                 return value
             return str(value)
+        elif role == Qt.BackgroundRole:
+            if index.row() % 2 == 1:  # 짝수 행 (0부터 시작하므로 인덱스가 1,3,5,...)
+                return QColor(240, 240, 240)  # 연한 회색
+            else:
+                return QVariant()
         return QVariant()
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
@@ -93,7 +99,7 @@ class DataFrameModel(QAbstractTableModel):
             if orientation == Qt.Horizontal:
                 return str(self._df.columns[section])
             else:
-                return str(self._df.index[section])
+                return str(section + 1)  # 행 번호를 1부터 시작하도록 설정
         return QVariant()
 
 
@@ -172,6 +178,13 @@ class JSONLViewer(QWidget):
         self.table_view.setItemDelegate(MultiLineDelegate(self.table_view))
         self.table_view.horizontalHeader().setStretchLastSection(True)
         self.table_view.verticalHeader().setDefaultSectionSize(50)  # 초기 행 높이 설정
+        self.table_view.setAlternatingRowColors(False)  # 직접 배경색 설정하므로 비활성화
+        self.table_view.verticalHeader().setVisible(True)  # 행 번호 표시
+
+        # 컨텍스트 메뉴 설정
+        self.table_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table_view.customContextMenuRequested.connect(self.open_context_menu)
+
         self.layout.addWidget(self.table_view, stretch=8)  # 테이블 뷰에 더 많은 공간 할당
 
         # 페이징 레이아웃
@@ -459,26 +472,10 @@ class JSONLViewer(QWidget):
             self.table_view.resizeColumnsToContents()
             self.page_label.setText(f"Page {self.current_page} of {self.total_pages}")
             self.table_view.horizontalHeader().setStretchLastSection(True)
-            self.adjust_row_heights()
+            self.table_view.resizeRowsToContents()  # 행 높이를 내용에 맞게 자동 조정
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to display page:\n{str(e)}")
             print(f"Error displaying page: {e}", file=sys.stderr)
-
-    def adjust_row_heights(self):
-        try:
-            delegate = self.table_view.itemDelegate()
-            for row in range(self.model.rowCount()):
-                max_height = 0
-                for column in range(self.model.columnCount()):
-                    index = self.model.index(row, column)
-                    option = self.table_view.viewOptions()
-                    size = delegate.sizeHint(option, index)
-                    if size.height() > max_height:
-                        max_height = size.height()
-                self.table_view.setRowHeight(row, max_height)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to adjust row heights:\n{str(e)}")
-            print(f"Error adjusting row heights: {e}", file=sys.stderr)
 
     def next_page(self):
         if self.current_page < self.total_pages:
@@ -489,6 +486,40 @@ class JSONLViewer(QWidget):
         if self.current_page > 1:
             self.current_page -= 1
             self.show_page()
+
+    def open_context_menu(self, position: QPoint):
+        indexes = self.table_view.selectedIndexes()
+        if not indexes:
+            return
+
+        # Get selected rows and columns
+        selected_rows = sorted(set(index.row() for index in indexes))
+        selected_columns = sorted(set(index.column() for index in indexes))
+
+        # Build JSON data
+        json_data = []
+        for row in selected_rows:
+            row_data = {}
+            for col in selected_columns:
+                index = self.model.index(row, col)
+                header = self.model.headerData(col, Qt.Horizontal, Qt.DisplayRole)
+                value = self.model.data(index, Qt.DisplayRole)
+                row_data[header] = value
+            json_data.append(row_data)
+
+        # Convert to JSON string
+        # json_str = pd.json.dumps(json_data, ensure_ascii=False, indent=4)
+        import json
+        # json_str = json.dumps(json_data, ensure_ascii=False, indent=4)
+        json_str = '\n'.join([json.dumps(item, ensure_ascii=False) for item in json_data])
+
+        # Create context menu
+        menu = QMenu()
+        copy_action = menu.addAction("Copy as JSON")
+        action = menu.exec_(self.table_view.viewport().mapToGlobal(position))
+        if action == copy_action:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(json_str)
 
 
 if __name__ == "__main__":
